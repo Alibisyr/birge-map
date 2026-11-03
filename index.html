@@ -48,7 +48,10 @@
     border: 0; border-radius: 12px; box-shadow: 0 1px 6px rgba(0, 0, 0, .2); outline: none; -webkit-appearance: none;
   }
   input::placeholder { color: var(--hint); }
-  .results { margin-top: 6px; background: var(--bg); border-radius: 12px; overflow: hidden; box-shadow: 0 1px 6px rgba(0, 0, 0, .2); }
+  .results {
+    margin-top: 6px; max-height: 55vh; overflow-y: auto; background: var(--bg); border-radius: 12px;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, .2);
+  }
   .results:empty { display: none; }
   .results button {
     display: block; width: 100%; padding: 10px 14px; font: inherit; text-align: left; color: var(--text);
@@ -57,8 +60,10 @@
   .results button:first-child { border-top: 0; }
   .results small { display: block; color: var(--hint); font-size: 13px; }
   .results .empty { padding: 10px 14px; color: var(--hint); }
+  .results .more { color: var(--accent); }
   .hint {
-    margin: 8px auto 0; width: fit-content; padding: 6px 12px; font-size: 13px; color: #fff;
+    margin: 8px auto 0; width: fit-content; max-width: 100%; box-sizing: border-box; padding: 6px 12px;
+    font-size: 13px; text-align: center; color: #fff;
     background: rgba(0, 0, 0, .6); border-radius: 14px; transition: opacity .4s;
   }
   .hint.gone { opacity: 0; }
@@ -147,9 +152,14 @@
     toastTimer = setTimeout(() => { $("toast").hidden = true; }, ms);
   }
 
+  // Место из поиска: пока метка на нём, боту уходит и название — попутчики увидят «НИШ», а не «точка на карте»
+  let chosen = null;
+
   function pick() {
     const c = map.getCenter();
-    const data = JSON.stringify({ lat: +c.lat.toFixed(6), lon: +c.lng.toFixed(6), ctx: params.get("ctx") || "" });
+    const point = { lat: +c.lat.toFixed(6), lon: +c.lng.toFixed(6), ctx: params.get("ctx") || "" };
+    if (chosen && c.distanceTo(chosen.at) < 50) point.label = chosen.title;
+    const data = JSON.stringify(point);
     if (!inTelegram) {
       console.log("sendData", data);
       toast(data);
@@ -183,7 +193,10 @@
   }
   $("locate").onclick = locate;
 
-  // --- поиск: сначала город и посёлки из списка, остальное — OpenStreetMap Nominatim вокруг Актобе ---
+  // --- поиск ---
+  // Пока печатают: город и посёлки, популярные места из списка ниже и Photon (OpenStreetMap для подсказок).
+  // По Enter или «Искать везде» — ещё и Nominatim: он лучше знает русские названия, но подсказывать
+  // на каждую букву через него нельзя по правилам OpenStreetMap.
 
   const words = text => text.toLowerCase().replace(/ё/g, "е").replace(/[^\p{L}\p{N}\s]/gu, " ")
     .split(/\s+/).filter(w => w && !FILLER.has(w));
@@ -202,67 +215,192 @@
     return AREAS.filter(a => a === exact || [...a.stems, words(a.title).join(" ")].some(s => s.startsWith(q)));
   }
 
+  // Популярные места — по-русски и с сокращениями: в OpenStreetMap они по-казахски, «НИШ» там не найти.
+  // keys — как ещё их пишут. Координаты — из OpenStreetMap.
+  const PLACES = [
+    { title: "НИШ — Назарбаев Интеллектуальная школа", sub: "Алтын Орда, 26Б", at: [50.277, 57.1312],
+      keys: "nis назарбаев зияткерлік мектеп школа" },
+    { title: "БИЛ — лицей «Білім-инновация»", sub: "ул. Каныша Сатпаева", at: [50.29193, 57.15066],
+      keys: "ктл билим инновация лицей школа" },
+    { title: "ТРЦ Keruen City", sub: "ул. Маншук Маметовой, 4", at: [50.28907, 57.19325],
+      keys: "керуен кируен трц тц торговый центр mall" },
+    { title: "ТРЦ Мега Шыгыс", sub: "ул. Кунаева, 208", at: [50.29721, 57.19829],
+      keys: "mega мега шыгыс трц тц торговый центр" },
+    { title: "ТРЦ Dalida Plaza", sub: "пр. Алии Молдагуловой, 74", at: [50.27424, 57.11358],
+      keys: "далида плаза трц тц торговый центр" },
+    { title: "ТЦ Айна", sub: "пр. Абилкайыр Хана, 42", at: [50.29886, 57.15436], keys: "aina тц торговый центр" },
+    { title: "Ж/д вокзал", sub: "Привокзальная площадь", at: [50.28109, 57.21448],
+      keys: "жд жэдэ вокзал поезд теміржол темиржол" },
+    { title: "Автовокзал «Сапар»", sub: "пр. 312-й Стрелковой Дивизии, 4", at: [50.29363, 57.19917],
+      keys: "автовокзал sapar" },
+    { title: "Автовокзал «Экспресс»", sub: "пр. 312-й Стрелковой Дивизии, 9Ж", at: [50.29886, 57.18081],
+      keys: "автовокзал express" },
+    { title: "Аэропорт", sub: "им. Алии Молдагуловой", at: [50.24702, 57.20793], keys: "airport әуежай самолет" },
+    { title: "Центральный рынок", sub: "ул. Т. Ахтанова", at: [50.27974, 57.23028], keys: "базар рынок" },
+    { title: "АРУ — университет им. Жубанова", sub: "пр. Абилкайыр Хана", at: [50.29005, 57.15362],
+      keys: "aru жубанов жубанова университет" },
+    { title: "ЗКМУ — медуниверситет им. Оспанова", sub: "ул. Пацаева", at: [50.29757, 57.15017],
+      keys: "мед медицинский медуниверситет оспанов университет" },
+    { title: "Университет им. Баишева", sub: "8-й микрорайон", at: [50.28164, 57.16131], keys: "баишев университет" },
+    { title: "БСМП — больница скорой помощи", sub: "ул. Пацаева, 7", at: [50.2982, 57.14749],
+      keys: "больница скорая медицинская помощи" },
+    { title: "Областная детская больница", sub: "пр. Едиге Батыра", at: [50.29248, 57.11385],
+      keys: "одкб детская больница" },
+    { title: "Перинатальный центр", sub: "пр. Едиге Батыра, 471В", at: [50.29385, 57.11381], keys: "роддом перинатальный" },
+    { title: "ЦОН — Центр обслуживания населения", sub: "пр. Санкибай Батыра, 249", at: [50.2751, 57.17278],
+      keys: "хкко хқко цон" },
+    { title: "Мечеть «Нур Гасыр»", sub: "пр. Абилкайыр Хана, 92", at: [50.28178, 57.18908],
+      keys: "мечеть мешіт нур гасыр nur" },
+    { title: "Центральный парк", sub: "им. Первого Президента", at: [50.28744, 57.18654], keys: "парк саябақ" },
+    { title: "Стадион «Кобыланды батыр»", sub: "пр. Абилкайыр Хана", at: [50.29153, 57.15909],
+      keys: "стадион қобыланды кобыланды" },
+    { title: "Жекпе-жек", sub: "дворец единоборств, ул. Ораз Татеулы, 5", at: [50.27624, 57.13892],
+      keys: "жекпе жек единоборств" },
+  ].map(p => ({ ...p, words: words(`${p.title} ${p.keys}`) }));
+
+  // Каждое слово запроса — начало какого-нибудь слова места: «ниш», «назарб инт», «трц»
+  const placesFor = ws => ws.length ? PLACES.filter(p => ws.every(w => p.words.some(k => k.startsWith(w)))) : [];
+
+  const KINDS = {
+    school: "школа", kindergarten: "детсад", university: "университет", college: "колледж", bus_stop: "остановка",
+    mall: "ТЦ", supermarket: "супермаркет", convenience: "магазин", marketplace: "рынок", hospital: "больница",
+    clinic: "поликлиника", pharmacy: "аптека", restaurant: "ресторан", cafe: "кафе", fuel: "заправка",
+    place_of_worship: "мечеть / храм", park: "парк", stadium: "стадион", hotel: "гостиница",
+    residential: "улица", primary: "улица", secondary: "улица", tertiary: "улица", living_street: "улица",
+    unclassified: "улица", suburb: "район", neighbourhood: "район", quarter: "район",
+  };
+  const near = (la, lo) => L.latLng(AKTOBE).distanceTo([la, lo]) < 35000;  // Алга и Мартук — не наши
+
+  // Подсказки Photon: первые на карте — ближе к тому, что сейчас на экране
+  let photonAbort;
+  async function photon(q) {
+    photonAbort?.abort();
+    photonAbort = new AbortController();
+    const c = map.getCenter();
+    const url = "https://photon.komoot.io/api/?" + new URLSearchParams({
+      q, limit: "10", lat: c.lat.toFixed(4), lon: c.lng.toFixed(4), lang: "default",  // русского нет, иначе — английский
+      bbox: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()].join(","),
+    });
+    const res = await (await fetch(url, { signal: photonAbort.signal })).json();
+    return res.features.map(f => {
+      const p = f.properties, [lo, la] = f.geometry.coordinates;
+      const street = [p.street, p.housenumber].filter(Boolean).join(", ");
+      const title = p.name || street;
+      const where = [KINDS[p.osm_value], p.name ? street : "", p.district || p.locality || p.city]
+        .filter(Boolean).join(" · ");
+      return { title, sub: where, at: [la, lo] };
+    }).filter(r => r.title && near(...r.at));
+  }
+
+  async function nominatim(q) {
+    const url = "https://nominatim.openstreetmap.org/search?" + new URLSearchParams({
+      q, format: "jsonv2", limit: "8", "accept-language": "ru", bounded: "1",
+      viewbox: [bounds.getWest(), bounds.getNorth(), bounds.getEast(), bounds.getSouth()].join(","),
+    });
+    return (await (await fetch(url)).json()).map(place => {
+      const parts = place.display_name.split(", ");
+      const title = place.name || parts[0];
+      return { title, sub: parts.filter(p => p !== title).slice(0, 3).join(", "), at: [+place.lat, +place.lon] };
+    });
+  }
+
   function goTo(area) {
     $("results").replaceChildren();
     $("q").value = area.title;
     $("q").blur();
+    chosen = null;
     map.setView(area.at, area.zoom);
   }
 
-  function item(title, sub, onclick) {
+  function goToPlace(place) {
+    $("results").replaceChildren();
+    $("q").value = place.title;
+    $("q").blur();
+    chosen = place;
+    map.once("moveend", () => {  // до setView: без анимации карта двигается сразу
+      $("hint").textContent = `📍 ${place.title}`;
+      $("hint").classList.remove("gone");
+    });
+    map.setView(place.at, 17);
+  }
+
+  function item(title, sub, onclick, className = "") {
     const button = document.createElement("button");
-    const small = document.createElement("small");
+    button.className = className;
     button.textContent = title;
-    small.textContent = sub;
-    button.append(small);
+    if (sub) {
+      const small = document.createElement("small");
+      small.textContent = sub;
+      button.append(small);
+    }
     button.onclick = onclick;
     return button;
   }
 
-  function showAreas(list) {
-    $("results").replaceChildren(...list.map(a => item(a.title, a === AREAS[0] ? "город" : "посёлок", () => goTo(a))));
-  }
-
-  $("q").addEventListener("input", () => showAreas(suggestions(words($("q").value))));
-
-  $("search").onsubmit = async e => {
-    e.preventDefault();
-    const q = $("q").value.trim();
-    const list = $("results");
+  // Список под поиском: посёлки, популярные места, найденное (без повторов) и «Искать везде»
+  function render(q, found = [], { searched = false } = {}) {
     const ws = words(q);
-    const area = areaOf(ws);
-    if (area) return goTo(area);  // написали «Заречный» — сразу туда
-    list.replaceChildren();
-    if (!q) return;
-    $("q").blur();
-    const url = "https://nominatim.openstreetmap.org/search?" + new URLSearchParams({
-      q, format: "jsonv2", limit: "6", "accept-language": "ru", bounded: "1",
-      viewbox: [bounds.getWest(), bounds.getNorth(), bounds.getEast(), bounds.getSouth()].join(","),
-    });
-    let found = [];
-    try {
-      found = await (await fetch(url)).json();
-    } catch (err) {
-      console.warn(err);
-    }
-    const nearby = suggestions(ws);
-    if (!found.length && !nearby.length) {
+    const list = $("results");
+    const areas = suggestions(ws);
+    const places = placesFor(ws);
+    const seen = new Set(places.map(p => p.title.toLowerCase()));
+    const rest = found.filter(r => {
+      const key = `${r.title}|${r.sub}`.toLowerCase();
+      if (seen.has(key) || seen.has(r.title.toLowerCase())) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 8);
+    list.replaceChildren(
+      ...areas.map(a => item(a.title, a === AREAS[0] ? "город" : "посёлок", () => goTo(a))),
+      ...places.map(p => item(p.title, p.sub, () => goToPlace(p))),
+      ...rest.map(r => item(r.title, r.sub, () => goToPlace(r))),
+    );
+    if (!q.trim()) return;
+    if (!searched) {
+      list.append(item(`🔍 Искать «${q.trim()}» везде`, "", () => searchAll(q), "more"));
+    } else if (!list.children.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
       empty.textContent = "Ничего не нашли. Подвиньте карту сами.";
       list.append(empty);
-      return;
     }
-    showAreas(nearby);
-    const seen = new Set();  // улица в OSM часто разбита на куски — показываем один раз
-    for (const place of found) {
-      const parts = place.display_name.split(", ");
-      const title = place.name || parts[0];
-      const where = parts.filter(p => p !== title).slice(0, 3).join(", ");
-      if (seen.has(title + where)) continue;
-      seen.add(title + where);
-      list.append(item(title, where, () => { list.replaceChildren(); map.setView([+place.lat, +place.lon], 17); }));
+  }
+
+  let typingTimer;
+  $("q").addEventListener("input", () => {
+    const q = $("q").value;
+    render(q);
+    clearTimeout(typingTimer);
+    if (q.trim().length < 3) return;
+    typingTimer = setTimeout(async () => {
+      try {
+        const found = await photon(q.trim());
+        if ($("q").value === q) render(q, found);
+      } catch (err) {
+        if (err.name !== "AbortError") console.warn(err);
+      }
+    }, 300);
+  });
+
+  async function searchAll(q) {
+    clearTimeout(typingTimer);
+    photonAbort?.abort();
+    $("q").blur();
+    let found = [];
+    try {
+      found = await nominatim(q.trim());
+    } catch (err) {
+      console.warn(err);
     }
+    if ($("q").value === q) render(q, found, { searched: true });
+  }
+
+  $("search").onsubmit = e => {
+    e.preventDefault();
+    const q = $("q").value;
+    const area = areaOf(words(q));
+    if (area) return goTo(area);  // написали «Заречный» — сразу туда
+    if (q.trim()) searchAll(q);
   };
 
   if (inTelegram) {
