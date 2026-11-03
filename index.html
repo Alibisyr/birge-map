@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<!--
+  Карта для выбора точки прямо в Telegram (Mini App). Открывается кнопкой «🗺 Выбрать на карте»
+  под полем ввода, возвращает боту {lat, lon, ctx} через Telegram.WebApp.sendData и закрывается.
+  ctx — что отмечали (маршрут или группа), его бот кладёт в адрес страницы: ?ctx=…&lat=…&lon=…
+  Геолокация не нужна: человек двигает карту под метку, ищет адрес или жмёт на нужное место.
+  Нужен https-хостинг (например GitHub Pages), адрес — в MAP_URL в .env.
+-->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Birge — точка на карте</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #fff);
+    --text: var(--tg-theme-text-color, #111);
+    --hint: var(--tg-theme-hint-color, #8a8a8e);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #fff);
+  }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body { font: 15px/1.35 -apple-system, system-ui, Roboto, "Segoe UI", sans-serif; color: var(--text); }
+  #map { position: fixed; inset: 0; background: #e8e4dc; }
+
+  /* Метка стоит в центре экрана, под ней двигается карта */
+  .pin { position: fixed; left: 50%; top: 50%; z-index: 1000; pointer-events: none; }
+  .pin::before {
+    content: ""; position: absolute; left: -16px; top: -39px; width: 32px; height: 32px; box-sizing: border-box;
+    background: #e53935; border: 3px solid #fff; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .35); transition: top .15s;
+  }
+  .pin::after {
+    content: ""; position: absolute; left: -4px; top: -2px; width: 8px; height: 4px;
+    background: rgba(0, 0, 0, .35); border-radius: 50%;
+  }
+  .pin.up::before { top: -49px; }
+
+  .top { position: fixed; top: 10px; left: 10px; right: 10px; z-index: 1001; }
+  form { display: flex; gap: 6px; }
+  input {
+    flex: 1; min-width: 0; padding: 11px 14px; font: inherit; color: var(--text); background: var(--bg);
+    border: 0; border-radius: 12px; box-shadow: 0 1px 6px rgba(0, 0, 0, .2); outline: none; -webkit-appearance: none;
+  }
+  input::placeholder { color: var(--hint); }
+  .results { margin-top: 6px; background: var(--bg); border-radius: 12px; overflow: hidden; box-shadow: 0 1px 6px rgba(0, 0, 0, .2); }
+  .results:empty { display: none; }
+  .results button {
+    display: block; width: 100%; padding: 10px 14px; font: inherit; text-align: left; color: var(--text);
+    background: none; border: 0; border-top: 1px solid rgba(128, 128, 128, .15);
+  }
+  .results button:first-child { border-top: 0; }
+  .results small { display: block; color: var(--hint); font-size: 13px; }
+  .results .empty { padding: 10px 14px; color: var(--hint); }
+  .hint {
+    margin: 8px auto 0; width: fit-content; padding: 6px 12px; font-size: 13px; color: #fff;
+    background: rgba(0, 0, 0, .6); border-radius: 14px; transition: opacity .4s;
+  }
+  .hint.gone { opacity: 0; }
+
+  .locate {
+    position: fixed; right: 12px; bottom: 28px; z-index: 1001; width: 48px; height: 48px; padding: 12px;
+    color: var(--accent); background: var(--bg); border: 0; border-radius: 50%; box-shadow: 0 1px 6px rgba(0, 0, 0, .25);
+  }
+  .locate svg { display: block; width: 24px; height: 24px; }
+  .toast {
+    position: fixed; left: 12px; right: 72px; bottom: 90px; z-index: 1001; padding: 10px 14px; font-size: 14px;
+    color: #fff; background: rgba(0, 0, 0, .75); border-radius: 12px;
+  }
+  /* Вне Telegram (проверка в браузере) вместо нативной кнопки — своя */
+  .pick {
+    position: fixed; left: 12px; right: 72px; bottom: 28px; z-index: 1001; padding: 14px; font: inherit; font-weight: 600;
+    color: var(--accent-text); background: var(--accent); border: 0; border-radius: 12px;
+  }
+  .leaflet-control-attribution { font-size: 10px; }
+  .leaflet-bottom.leaflet-right { right: auto; left: 0; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="pin" id="pin"></div>
+<div class="top">
+  <form id="search">
+    <input id="q" type="search" enterkeyhint="search" placeholder="🔍 Улица, дом или место" autocomplete="off">
+  </form>
+  <div class="results" id="results"></div>
+  <div class="hint" id="hint">Двигайте карту или нажмите на место</div>
+</div>
+<button class="locate" id="locate" aria-label="Где я">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/>
+    <path d="M12 1v4M12 19v4M1 12h4M19 12h4"/>
+  </svg>
+</button>
+<div class="toast" id="toast" hidden></div>
+<button class="pick" id="pick" hidden>Выбрать эту точку</button>
+
+<script>
+  const AKTOBE = [50.2839, 57.1670];  // как CENTER в birge/routes.py
+  const tg = window.Telegram && Telegram.WebApp;
+  const inTelegram = Boolean(tg && tg.initData);
+  const params = new URLSearchParams(location.search);
+  const lat = parseFloat(params.get("lat")), lon = parseFloat(params.get("lon"));
+  const start = Number.isFinite(lat) && Number.isFinite(lon) ? [lat, lon] : null;
+  const $ = id => document.getElementById(id);
+
+  // Дальше ~60 км от Актобе бот точки не принимает — туда и не пускаем
+  const bounds = L.latLng(AKTOBE).toBounds(130000);
+  const map = L.map("map", { zoomControl: false, maxBounds: bounds, maxBoundsViscosity: 1, minZoom: 9 })
+    .setView(start || AKTOBE, start ? 15 : 12);
+  map.attributionControl.setPrefix(false);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  }).addTo(map);
+
+  map.on("movestart", () => { $("pin").classList.add("up"); $("hint").classList.add("gone"); });
+  map.on("moveend", () => $("pin").classList.remove("up"));
+  map.on("click", e => map.panTo(e.latlng));
+
+  let toastTimer;
+  function toast(text) {
+    $("toast").textContent = text;
+    $("toast").hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { $("toast").hidden = true; }, 4000);
+  }
+
+  function pick() {
+    const c = map.getCenter();
+    const data = JSON.stringify({ lat: +c.lat.toFixed(6), lon: +c.lng.toFixed(6), ctx: params.get("ctx") || "" });
+    if (inTelegram) {
+      tg.sendData(data);  // Telegram сам закроет карту и пришлёт точку боту
+    } else {
+      console.log("sendData", data);
+      toast(data);
+    }
+  }
+
+  // «Где я» — по желанию: без доступа к геопозиции карта всё равно работает
+  function locate() {
+    const show = (la, lo) => map.setView([la, lo], 17);
+    const fail = () => toast("Не получилось узнать, где вы. Подвиньте карту сами.");
+    const lm = inTelegram && tg.isVersionAtLeast("8.0") && tg.LocationManager;
+    if (lm) {
+      const get = () => lm.isLocationAvailable ? lm.getLocation(d => d ? show(d.latitude, d.longitude) : fail()) : fail();
+      lm.isInited ? get() : lm.init(get);
+    } else if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(p => show(p.coords.latitude, p.coords.longitude), fail,
+        { enableHighAccuracy: true, timeout: 10000 });
+    } else {
+      fail();
+    }
+  }
+  $("locate").onclick = locate;
+
+  // Поиск адреса — OpenStreetMap Nominatim, только вокруг Актобе. Запрос — по Enter, не на каждую букву
+  $("search").onsubmit = async e => {
+    e.preventDefault();
+    const q = $("q").value.trim();
+    const list = $("results");
+    list.replaceChildren();
+    if (!q) return;
+    $("q").blur();
+    const url = "https://nominatim.openstreetmap.org/search?" + new URLSearchParams({
+      q, format: "jsonv2", limit: "6", "accept-language": "ru", bounded: "1",
+      viewbox: [bounds.getWest(), bounds.getNorth(), bounds.getEast(), bounds.getSouth()].join(","),
+    });
+    let found = [];
+    try {
+      found = await (await fetch(url)).json();
+    } catch (err) {
+      console.warn(err);
+    }
+    if (!found.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "Ничего не нашли. Подвиньте карту сами.";
+      list.append(empty);
+      return;
+    }
+    const seen = new Set();  // улица в OSM часто разбита на куски — показываем один раз
+    for (const place of found) {
+      const parts = place.display_name.split(", ");
+      const title = place.name || parts[0];
+      const where = parts.filter(p => p !== title).slice(0, 3).join(", ");
+      if (seen.has(title + where)) continue;
+      seen.add(title + where);
+      const button = document.createElement("button");
+      const small = document.createElement("small");
+      button.textContent = title;
+      small.textContent = where;
+      button.append(small);
+      button.onclick = () => { list.replaceChildren(); map.setView([+place.lat, +place.lon], 17); };
+      list.append(button);
+    }
+  };
+  $("q").addEventListener("input", () => { if (!$("q").value) $("results").replaceChildren(); });
+
+  if (inTelegram) {
+    tg.ready();
+    tg.expand();
+    if (tg.isVersionAtLeast("7.7")) tg.disableVerticalSwipes();  // иначе карту не подвинуть вниз — окно закрывается
+    tg.MainButton.setParams({ text: "Выбрать эту точку", is_visible: true });
+    tg.MainButton.onClick(pick);
+  } else {
+    $("pick").hidden = false;
+    $("pick").onclick = pick;
+  }
+</script>
+</body>
+</html>
